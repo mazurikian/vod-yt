@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: vector-youtube-upload
+  group: rommellamaravilla-youtube-upload
   cancel-in-progress: false
 
 jobs:
@@ -28,7 +28,7 @@ jobs:
 
       - name: Download and upload oldest pending VOD
         env:
-          KICK_CHANNEL: sektorlagg
+          KICK_CHANNEL: rommellamaravilla
           WORKSPACE_DIR: /mnt/workspace
           YOUTUBE_PRIVACY_STATUS: private
           YOUTUBE_CATEGORY_ID: "20"
