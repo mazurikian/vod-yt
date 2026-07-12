@@ -1,0 +1,38 @@
+name: Upload oldest VOD to YouTube
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: vector-youtube-upload
+  cancel-in-progress: false
+
+jobs:
+  upload:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Prepare environment
+        run: |
+          sudo mkdir -p /mnt/workspace
+          sudo chown "$USER:$USER" /mnt/workspace
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: Install Python dependencies
+        run: python -m pip install --requirement requirements.txt
+
+      - name: Download and upload oldest pending VOD
+        env:
+          KICK_CHANNEL: vector
+          WORKSPACE_DIR: /mnt/workspace
+          YOUTUBE_PRIVACY_STATUS: private
+          YOUTUBE_CATEGORY_ID: "20"
+          YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
+          YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
+          YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
+        run: python download_vod.py
