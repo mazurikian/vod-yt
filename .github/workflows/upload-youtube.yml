@@ -28,7 +28,7 @@ jobs:
 
       - name: Download and upload oldest pending VOD
         env:
-          KICK_CHANNEL: vector
+          KICK_CHANNEL: sektorlagg
           WORKSPACE_DIR: /mnt/workspace
           YOUTUBE_PRIVACY_STATUS: private
           YOUTUBE_CATEGORY_ID: "20"
