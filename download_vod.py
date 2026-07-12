@@ -189,7 +189,7 @@ def upload_video(youtube, video, video_path):
     source = str(video.get("source") or "")
 
     title = f"{channel_name} | {formatted_date}"[:100]
-    description = "\n".join(
+    description = "\n\n".join(
         [
             session_title,
             start_time,
