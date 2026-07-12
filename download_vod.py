@@ -160,21 +160,10 @@ def download_video(video, output_path):
     subprocess.run(
         [
             "ffmpeg",
-            "-y",
             "-i",
             video["source"],
-            "-map",
-            "0:v:0",
-            "-map",
-            "0:a?",
             "-c",
             "copy",
-            "-bsf:a",
-            "aac_adtstoasc",
-            "-movflags",
-            "+faststart",
-            "-avoid_negative_ts",
-            "make_zero",
             str(output_path),
         ],
         check=True,
@@ -224,7 +213,7 @@ def upload_video(youtube, video, video_path):
         },
         media_body=MediaFileUpload(
             str(video_path),
-            mimetype="video/mp4",
+            mimetype="video/mp2t",
             chunksize=8 * 1024 * 1024,
             resumable=True,
         ),
@@ -302,7 +291,7 @@ def main():
         encoding="utf-8",
     )
 
-    output_path = video_directory / f"{CHANNEL}_{video_date}_{video_id}.mp4"
+    output_path = video_directory / "output.ts"
 
     print(f"Descargando el VOD pendiente más antiguo: {video_id} ({created_at})")
     download_video(video, output_path)

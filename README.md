@@ -5,7 +5,7 @@ Este workflow procesa un VOD por ejecución:
 1. Consulta los VODs del canal `vector` en Kick.
 2. Consulta los videos ya subidos al canal de YouTube.
 3. Ordena los VODs por fecha, del más antiguo al más reciente.
-4. Descarga el primer VOD pendiente como MP4.
+4. Descarga el primer VOD pendiente como `output.ts`.
 5. Lo sube mediante la YouTube Data API con carga resumible.
 6. Añade `kick-vod-id:<ID>` como etiqueta del video para evitar duplicados.
 
@@ -67,3 +67,14 @@ La descripción contiene, en este orden y en líneas separadas:
 <start_time>
 <source>
 ```
+
+
+## Formato de descarga TS
+
+El archivo se genera con este comando equivalente:
+
+```bash
+ffmpeg -i SOURCE -c copy output.ts
+```
+
+No se recodifica el video ni el audio. La subida usa el tipo MIME `video/mp2t`.
