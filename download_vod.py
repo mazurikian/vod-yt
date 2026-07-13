@@ -462,7 +462,7 @@ def build_video_metadata(video, part_number, total_parts):
     else:
         title = base_title
 
-    description = "\n".join([session_title, start_time, source])
+    description = "\n\n".join([session_title, start_time, source])
     part_tag = make_part_tag(video_id, part_number, total_parts)
 
     return title[:100], description, part_tag
