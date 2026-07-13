@@ -10,7 +10,6 @@ concurrency:
 jobs:
   upload:
     runs-on: ubuntu-latest
-    timeout-minutes: 360
 
     steps:
       - name: Checkout
@@ -30,7 +29,7 @@ jobs:
         env:
           KICK_CHANNEL: vector
           WORKSPACE_DIR: /mnt/workspace
-          YOUTUBE_PRIVACY_STATUS: private
+          YOUTUBE_PRIVACY_STATUS: public
           YOUTUBE_CATEGORY_ID: "20"
           MAX_PART_DURATION_SECONDS: "42600"
           YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
