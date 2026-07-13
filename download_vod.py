@@ -1,4 +1,7 @@
+import bisect
+import copy
 import json
+import math
 import os
 import random
 import re
@@ -7,18 +10,35 @@ import subprocess
 import time
 import urllib.request
 from pathlib import Path
+from urllib.parse import urljoin
 
 import httplib2
+import m3u8
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaFileUpload
+from m3u8.model import SegmentList
 
 CHANNEL = os.environ.get("KICK_CHANNEL", "vector")
 KICK_API_URL = f"https://kick.com/api/v2/channels/{CHANNEL}/videos"
 WORKSPACE = Path(os.environ.get("WORKSPACE_DIR", "/mnt/workspace"))
 PRIVACY_STATUS = os.environ.get("YOUTUBE_PRIVACY_STATUS", "private")
 CATEGORY_ID = os.environ.get("YOUTUBE_CATEGORY_ID", "20")
+
+# 11 horas y 50 minutos. El margen evita acercarse demasiado al límite
+# de 12 horas de YouTube.
+MAX_PART_DURATION_SECONDS = int(
+    os.environ.get("MAX_PART_DURATION_SECONDS", str(11 * 60 * 60 + 50 * 60))
+)
+
+HTTP_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:152.0) "
+        "Gecko/20100101 Firefox/152.0"
+    ),
+    "Accept": "application/json,application/vnd.apple.mpegurl,*/*",
+}
 
 SCOPES = [
     "https://www.googleapis.com/auth/youtube.upload",
@@ -31,7 +51,11 @@ RETRIABLE_EXCEPTIONS = (
     socket.timeout,
 )
 MAX_RETRIES = 10
-VOD_ID_PATTERN = re.compile(r"kick-vod-id:([^\s]+)")
+
+LEGACY_VOD_TAG_PATTERN = re.compile(r"kick-vod-id:([^\s]+)")
+PART_TAG_PATTERN = re.compile(
+    r"kick-vod-(?P<vod_id>.+)-part-(?P<part>\d+)-of-(?P<total>\d+)"
+)
 
 
 def get_required_env(name):
@@ -54,8 +78,8 @@ def build_youtube_client():
     return build("youtube", "v3", credentials=credentials, cache_discovery=False)
 
 
-def get_uploaded_vod_ids(youtube):
-    """Obtiene los IDs de Kick guardados en descripciones del canal de YouTube."""
+def get_uploaded_markers(youtube):
+    """Obtiene los VOD completos antiguos y las partes nuevas ya subidas."""
     channel_response = youtube.channels().list(
         part="contentDetails",
         mine=True,
@@ -68,7 +92,8 @@ def get_uploaded_vod_ids(youtube):
         "relatedPlaylists"
     ]["uploads"]
 
-    uploaded_vod_ids = set()
+    legacy_vod_ids = set()
+    uploaded_part_tags = set()
     page_token = None
 
     while True:
@@ -96,37 +121,29 @@ def get_uploaded_vod_ids(youtube):
                 description = snippet.get("description", "")
                 tags = snippet.get("tags", [])
 
-                # Compatibilidad con videos antiguos que guardaban el ID
-                # en la descripción.
-                match = VOD_ID_PATTERN.search(description)
+                # Compatibilidad con la versión anterior, que guardaba
+                # kick-vod-id:<ID> en la descripción o como etiqueta.
+                match = LEGACY_VOD_TAG_PATTERN.search(description)
                 if match:
-                    uploaded_vod_ids.add(match.group(1))
+                    legacy_vod_ids.add(match.group(1))
 
-                # Los videos nuevos guardan el ID en una etiqueta para dejar
-                # la descripción exactamente con los datos solicitados.
                 for tag in tags:
-                    match = VOD_ID_PATTERN.fullmatch(tag)
-                    if match:
-                        uploaded_vod_ids.add(match.group(1))
+                    legacy_match = LEGACY_VOD_TAG_PATTERN.fullmatch(tag)
+                    if legacy_match:
+                        legacy_vod_ids.add(legacy_match.group(1))
+
+                    if PART_TAG_PATTERN.fullmatch(tag):
+                        uploaded_part_tags.add(tag)
 
         page_token = playlist_response.get("nextPageToken")
         if not page_token:
             break
 
-    return uploaded_vod_ids
+    return legacy_vod_ids, uploaded_part_tags
 
 
 def get_kick_videos():
-    request = urllib.request.Request(
-        KICK_API_URL,
-        headers={
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:152.0) "
-                "Gecko/20100101 Firefox/152.0"
-            ),
-            "Accept": "application/json",
-        },
-    )
+    request = urllib.request.Request(KICK_API_URL, headers=HTTP_HEADERS)
 
     with urllib.request.urlopen(request, timeout=60) as response:
         videos = json.load(response)
@@ -149,19 +166,243 @@ def get_kick_videos():
     )
 
 
-def select_oldest_pending_video(videos, uploaded_vod_ids):
-    for video in videos:
-        if str(video["id"]) not in uploaded_vod_ids:
-            return video
-    return None
+def fetch_playlist(url):
+    """Descarga y analiza un playlist, conservando la URL final tras redirecciones."""
+    request = urllib.request.Request(url, headers=HTTP_HEADERS)
+
+    with urllib.request.urlopen(request, timeout=60) as response:
+        final_url = response.geturl()
+        content = response.read().decode("utf-8-sig")
+
+    return m3u8.loads(content, uri=final_url), final_url
 
 
-def download_video(video, output_path):
+def variant_score(variant):
+    """Prioriza ancho de banda, resolución y FPS para elegir la mejor variante."""
+    stream_info = variant.stream_info
+    bandwidth = (
+        getattr(stream_info, "average_bandwidth", None)
+        or getattr(stream_info, "bandwidth", None)
+        or 0
+    )
+    resolution = getattr(stream_info, "resolution", None) or (0, 0)
+    frame_rate = getattr(stream_info, "frame_rate", None) or 0
+
+    return (
+        int(bandwidth),
+        int(resolution[0]) * int(resolution[1]),
+        float(frame_rate),
+    )
+
+
+def resolve_media_playlist(source_url):
+    """Sigue playlists maestros y selecciona la variante de mayor calidad."""
+    current_url = source_url
+
+    for _ in range(4):
+        playlist, final_url = fetch_playlist(current_url)
+
+        if not playlist.is_variant:
+            if not playlist.segments:
+                raise RuntimeError(
+                    f"El playlist no contiene segmentos multimedia: {final_url}"
+                )
+            return playlist, final_url
+
+        if not playlist.playlists:
+            raise RuntimeError(f"El playlist maestro no contiene variantes: {final_url}")
+
+        selected_variant = max(playlist.playlists, key=variant_score)
+        current_url = urljoin(final_url, selected_variant.uri)
+
+        stream_info = selected_variant.stream_info
+        resolution = getattr(stream_info, "resolution", None)
+        frame_rate = getattr(stream_info, "frame_rate", None)
+        bandwidth = (
+            getattr(stream_info, "average_bandwidth", None)
+            or getattr(stream_info, "bandwidth", None)
+        )
+        print(
+            "Variante HLS seleccionada: "
+            f"{resolution or 'resolución desconocida'}, "
+            f"{frame_rate or 'FPS desconocidos'} FPS, "
+            f"{bandwidth or 'bitrate desconocido'} bps"
+        )
+
+    raise RuntimeError("Se encontraron demasiados playlists maestros anidados.")
+
+
+def build_balanced_segment_groups(segments, max_duration):
+    """
+    Divide segmentos consecutivos en partes de duración similar.
+
+    Los cortes siempre ocurren entre segmentos HLS y ninguna parte supera
+    max_duration. Si el VOD dura más de dos límites, crea tres o más partes.
+    """
+    durations = [float(segment.duration or 0) for segment in segments]
+
+    if not durations or any(duration <= 0 for duration in durations):
+        raise RuntimeError("El playlist contiene segmentos sin duración válida.")
+
+    longest_segment = max(durations)
+    if longest_segment > max_duration:
+        raise RuntimeError(
+            "Un único segmento HLS supera la duración máxima permitida: "
+            f"{longest_segment:.3f} segundos."
+        )
+
+    cumulative = [0.0]
+    for duration in durations:
+        cumulative.append(cumulative[-1] + duration)
+
+    total_duration = cumulative[-1]
+    initial_part_count = max(1, math.ceil(total_duration / max_duration))
+
+    for part_count in range(initial_part_count, len(segments) + 1):
+        boundaries = [0]
+        start_index = 0
+        valid = True
+
+        for boundary_number in range(1, part_count):
+            remaining_parts = part_count - boundary_number
+            maximum_index = len(segments) - remaining_parts
+
+            # La parte actual no puede superar max_duration.
+            maximum_cumulative = cumulative[start_index] + max_duration
+
+            # Tras el corte, la duración restante debe caber en las partes
+            # restantes. Esto evita dejar una última parte demasiado larga.
+            minimum_cumulative = total_duration - remaining_parts * max_duration
+
+            minimum_index = max(
+                start_index + 1,
+                bisect.bisect_left(
+                    cumulative,
+                    minimum_cumulative,
+                    start_index + 1,
+                    maximum_index + 1,
+                ),
+            )
+            maximum_valid_index = bisect.bisect_right(
+                cumulative,
+                maximum_cumulative,
+                minimum_index,
+                maximum_index + 1,
+            ) - 1
+
+            if minimum_index > maximum_valid_index:
+                valid = False
+                break
+
+            target_cumulative = total_duration * boundary_number / part_count
+            insertion_index = bisect.bisect_left(
+                cumulative,
+                target_cumulative,
+                minimum_index,
+                maximum_valid_index + 1,
+            )
+
+            candidates = {
+                min(max(insertion_index, minimum_index), maximum_valid_index),
+                min(max(insertion_index - 1, minimum_index), maximum_valid_index),
+            }
+            selected_index = min(
+                candidates,
+                key=lambda index: abs(cumulative[index] - target_cumulative),
+            )
+
+            boundaries.append(selected_index)
+            start_index = selected_index
+
+        if not valid:
+            continue
+
+        boundaries.append(len(segments))
+        groups = []
+
+        for part_index in range(len(boundaries) - 1):
+            start = boundaries[part_index]
+            end = boundaries[part_index + 1]
+            duration = cumulative[end] - cumulative[start]
+            groups.append(
+                {
+                    "start": start,
+                    "end": end,
+                    "duration": duration,
+                }
+            )
+
+        if groups and all(group["duration"] <= max_duration for group in groups):
+            return groups, total_duration
+
+    raise RuntimeError("No se pudo dividir el playlist dentro del límite configurado.")
+
+
+def absolutize_segment_references(segment, playlist_url):
+    segment.uri = urljoin(playlist_url, segment.uri)
+
+    if segment.key and segment.key.uri:
+        segment.key.uri = urljoin(playlist_url, segment.key.uri)
+
+    if segment.init_section and segment.init_section.uri:
+        segment.init_section.uri = urljoin(
+            playlist_url,
+            segment.init_section.uri,
+        )
+
+    for partial_segment in getattr(segment, "parts", []) or []:
+        if partial_segment.uri:
+            partial_segment.uri = urljoin(playlist_url, partial_segment.uri)
+
+
+def write_part_playlist(
+    media_playlist,
+    media_playlist_url,
+    start_index,
+    end_index,
+    destination,
+):
+    """
+    Crea un playlist HLS local conservando KEY, MAP, BYTERANGE,
+    DISCONTINUITY y demás metadatos asociados a cada segmento.
+    """
+    part_playlist = copy.deepcopy(media_playlist)
+    selected_segments = list(part_playlist.segments[start_index:end_index])
+
+    if not selected_segments:
+        raise RuntimeError("Se intentó crear una parte HLS sin segmentos.")
+
+    for segment in selected_segments:
+        absolutize_segment_references(segment, media_playlist_url)
+
+    part_playlist.segments = SegmentList(selected_segments)
+    part_playlist.media_sequence = int(media_playlist.media_sequence or 0) + start_index
+    part_playlist.is_endlist = True
+    part_playlist.playlist_type = "vod"
+
+    # Estas etiquetas de playlists en vivo no son necesarias en una parte VOD.
+    for attribute in (
+        "preload_hint",
+        "server_control",
+        "skip",
+        "rendition_reports",
+        "start",
+    ):
+        if hasattr(part_playlist, attribute):
+            setattr(part_playlist, attribute, None)
+
+    destination.write_text(part_playlist.dumps(), encoding="utf-8")
+
+
+def download_part(part_playlist_path, output_path):
+    """Descarga y concatena los segmentos de una parte sin recodificar."""
     subprocess.run(
         [
             "ffmpeg",
+            "-protocol_whitelist",
+            "file,http,https,tcp,tls,crypto,data",
             "-i",
-            video["source"],
+            str(part_playlist_path),
             "-c",
             "copy",
             str(output_path),
@@ -170,7 +411,34 @@ def download_video(video, output_path):
     )
 
 
-def upload_video(youtube, video, video_path):
+def format_seconds(seconds):
+    rounded = int(round(seconds))
+    hours, remainder = divmod(rounded, 3600)
+    minutes, secs = divmod(remainder, 60)
+    return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+
+
+def make_part_tag(video_id, part_number, total_parts):
+    return f"kick-vod-{video_id}-part-{part_number}-of-{total_parts}"
+
+
+def has_complete_part_set(video_id, uploaded_part_tags):
+    """Permite omitir VODs ya completos sin volver a consultar su playlist."""
+    parts_by_total = {}
+
+    for tag in uploaded_part_tags:
+        match = PART_TAG_PATTERN.fullmatch(tag)
+        if not match or match.group("vod_id") != video_id:
+            continue
+
+        part = int(match.group("part"))
+        total = int(match.group("total"))
+        parts_by_total.setdefault(total, set()).add(part)
+
+    return any(parts == set(range(1, total + 1)) for total, parts in parts_by_total.items())
+
+
+def build_video_metadata(video, part_number, total_parts):
     video_id = str(video["id"])
     created_at = str(video.get("created_at", ""))
     video_date = created_at.split("T")[0].split(" ")[0]
@@ -188,13 +456,23 @@ def upload_video(youtube, video, video_path):
     start_time = str(video.get("start_time") or "")
     source = str(video.get("source") or "")
 
-    title = f"{channel_name} | {formatted_date}"[:100]
-    description = "\n\n".join(
-        [
-            session_title,
-            start_time,
-            source,
-        ]
+    base_title = f"{channel_name} | {formatted_date}"
+    if total_parts > 1:
+        title = f"{base_title} | {part_number}/{total_parts}"
+    else:
+        title = base_title
+
+    description = "\n".join([session_title, start_time, source])
+    part_tag = make_part_tag(video_id, part_number, total_parts)
+
+    return title[:100], description, part_tag
+
+
+def upload_video(youtube, video, video_path, part_number, total_parts):
+    title, description, part_tag = build_video_metadata(
+        video,
+        part_number,
+        total_parts,
     )
 
     insert_request = youtube.videos().insert(
@@ -204,7 +482,7 @@ def upload_video(youtube, video, video_path):
             "snippet": {
                 "title": title,
                 "description": description,
-                "tags": [CHANNEL, "Kick", "VOD", f"kick-vod-id:{video_id}"],
+                "tags": [CHANNEL, "Kick", "VOD", part_tag],
                 "categoryId": CATEGORY_ID,
             },
             "status": {
@@ -248,14 +526,111 @@ def upload_video(youtube, video, video_path):
 
             delay = random.random() * (2**retry)
             print(
-                f"Error temporal de conexión; "
+                "Error temporal de conexión; "
                 f"nuevo intento en {delay:.1f} segundos: {error}"
             )
             time.sleep(delay)
 
     uploaded_id = response["id"]
     print(f"Video subido correctamente: https://youtu.be/{uploaded_id}")
-    return uploaded_id
+    return uploaded_id, part_tag
+
+
+def process_oldest_pending_video(
+    youtube,
+    videos,
+    legacy_vod_ids,
+    uploaded_part_tags,
+):
+    for video in videos:
+        video_id = str(video["id"])
+
+        if video_id in legacy_vod_ids:
+            continue
+
+        if has_complete_part_set(video_id, uploaded_part_tags):
+            continue
+
+        print(f"Analizando el VOD pendiente más antiguo: {video_id}")
+        media_playlist, media_playlist_url = resolve_media_playlist(video["source"])
+        groups, total_duration = build_balanced_segment_groups(
+            media_playlist.segments,
+            MAX_PART_DURATION_SECONDS,
+        )
+        total_parts = len(groups)
+
+        expected_tags = {
+            make_part_tag(video_id, part_number, total_parts)
+            for part_number in range(1, total_parts + 1)
+        }
+        missing_tags = expected_tags - uploaded_part_tags
+
+        if not missing_tags:
+            # Puede ocurrir si había etiquetas parciales de distintas versiones.
+            continue
+
+        print(
+            f"Duración total: {format_seconds(total_duration)}. "
+            f"Se generarán {total_parts} parte(s)."
+        )
+
+        created_at = str(video.get("created_at", "unknown"))
+        video_date = created_at.split("T")[0].split(" ")[0]
+        video_directory = WORKSPACE / f"{video_date}_{video_id}"
+        video_directory.mkdir(parents=True, exist_ok=True)
+
+        (video_directory / "video.json").write_text(
+            json.dumps(video, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+        for part_number, group in enumerate(groups, start=1):
+            part_tag = make_part_tag(video_id, part_number, total_parts)
+
+            if part_tag in uploaded_part_tags:
+                print(f"La parte {part_number}/{total_parts} ya existe; se omite.")
+                continue
+
+            playlist_path = video_directory / (
+                f"playlist_part_{part_number:02d}_of_{total_parts:02d}.m3u8"
+            )
+            output_path = video_directory / (
+                f"part_{part_number:02d}_of_{total_parts:02d}.ts"
+            )
+
+            print(
+                f"Preparando parte {part_number}/{total_parts}: "
+                f"{format_seconds(group['duration'])}, "
+                f"segmentos {group['start'] + 1}-{group['end']}."
+            )
+
+            write_part_playlist(
+                media_playlist,
+                media_playlist_url,
+                group["start"],
+                group["end"],
+                playlist_path,
+            )
+
+            try:
+                download_part(playlist_path, output_path)
+                _, uploaded_tag = upload_video(
+                    youtube,
+                    video,
+                    output_path,
+                    part_number,
+                    total_parts,
+                )
+                uploaded_part_tags.add(uploaded_tag)
+            finally:
+                # Se elimina cada parte tras subirla para reducir el uso de disco.
+                output_path.unlink(missing_ok=True)
+                playlist_path.unlink(missing_ok=True)
+
+        print(f"VOD {video_id} procesado completamente.")
+        return True
+
+    return False
 
 
 def main():
@@ -264,10 +639,13 @@ def main():
             "YOUTUBE_PRIVACY_STATUS debe ser private, unlisted o public."
         )
 
+    if MAX_PART_DURATION_SECONDS <= 0:
+        raise RuntimeError("MAX_PART_DURATION_SECONDS debe ser mayor que cero.")
+
     WORKSPACE.mkdir(parents=True, exist_ok=True)
 
     youtube = build_youtube_client()
-    uploaded_vod_ids = get_uploaded_vod_ids(youtube)
+    legacy_vod_ids, uploaded_part_tags = get_uploaded_markers(youtube)
     videos = get_kick_videos()
 
     (WORKSPACE / "videos.json").write_text(
@@ -275,27 +653,15 @@ def main():
         encoding="utf-8",
     )
 
-    video = select_oldest_pending_video(videos, uploaded_vod_ids)
-    if video is None:
-        print("No hay VODs pendientes para subir a YouTube.")
-        return
-
-    video_id = str(video["id"])
-    created_at = str(video.get("created_at", "unknown"))
-    video_date = created_at.split("T")[0].split(" ")[0]
-    video_directory = WORKSPACE / f"{video_date}_{video_id}"
-    video_directory.mkdir(parents=True, exist_ok=True)
-
-    (video_directory / "video.json").write_text(
-        json.dumps(video, ensure_ascii=False, indent=2),
-        encoding="utf-8",
+    processed = process_oldest_pending_video(
+        youtube,
+        videos,
+        legacy_vod_ids,
+        uploaded_part_tags,
     )
 
-    output_path = video_directory / "output.ts"
-
-    print(f"Descargando el VOD pendiente más antiguo: {video_id} ({created_at})")
-    download_video(video, output_path)
-    upload_video(youtube, video, output_path)
+    if not processed:
+        print("No hay VODs pendientes para subir a YouTube.")
 
 
 if __name__ == "__main__":
