@@ -1,9 +1,8 @@
 # download_vod.py
 # Kick VOD -> Internet Archive
 # Sin YouTube
-# VOD completo sin dividir
+# Descarga directa HLS sin crear playlist local
 
-import copy
 import json
 import os
 import subprocess
@@ -13,13 +12,13 @@ from urllib.parse import urljoin
 
 import internetarchive
 import m3u8
-from m3u8.model import SegmentList
 
 
 CHANNEL = os.environ.get(
     "KICK_CHANNEL",
     "vector"
 )
+
 
 KICK_API_URL = (
     f"https://kick.com/api/v2/channels/{CHANNEL}/videos"
@@ -38,6 +37,7 @@ IA_ACCESS_KEY = os.environ.get(
     "IA_ACCESS_KEY"
 )
 
+
 IA_SECRET_KEY = os.environ.get(
     "IA_SECRET_KEY"
 )
@@ -50,19 +50,22 @@ IA_COLLECTION = os.environ.get(
 
 
 HTTP_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 "
-        "(Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 "
-        "(KHTML, like Gecko) "
-        "Chrome/120 Safari/537.36"
-    ),
 
-    "Accept": (
-        "application/json,"
-        "application/vnd.apple.mpegurl,"
-        "*/*"
-    )
+    "User-Agent":
+        (
+            "Mozilla/5.0 "
+            "(Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 "
+            "(KHTML, like Gecko) "
+            "Chrome/120 Safari/537.36"
+        ),
+
+    "Accept":
+        (
+            "application/json,"
+            "application/vnd.apple.mpegurl,"
+            "*/*"
+        )
 }
 
 
@@ -96,8 +99,11 @@ def get_kick_videos():
 
 
     return sorted(
+
         [
+
             video
+
             for video in videos
 
             if video.get(
@@ -111,20 +117,26 @@ def get_kick_videos():
             and video.get(
                 "id"
             )
+
         ],
 
-        key=lambda video: (
-            video.get(
-                "created_at",
-                ""
-            ),
+        key=lambda video:
 
-            str(
+            (
+
                 video.get(
-                    "id"
+                    "created_at",
+                    ""
+                ),
+
+                str(
+                    video.get(
+                        "id"
+                    )
                 )
+
             )
-        )
+
     )
 
 
@@ -144,6 +156,7 @@ def fetch_playlist(url):
 
         final_url = response.geturl()
 
+
         content = (
             response
             .read()
@@ -154,12 +167,14 @@ def fetch_playlist(url):
 
 
     return (
+
         m3u8.loads(
             content,
             uri=final_url
         ),
 
         final_url
+
     )
 
 
@@ -170,6 +185,7 @@ def variant_score(variant):
 
 
     bandwidth = (
+
         getattr(
             info,
             "average_bandwidth",
@@ -185,10 +201,12 @@ def variant_score(variant):
         )
 
         or 0
+
     )
 
 
     resolution = (
+
         getattr(
             info,
             "resolution",
@@ -198,10 +216,12 @@ def variant_score(variant):
         or
 
         (0, 0)
+
     )
 
 
     fps = (
+
         getattr(
             info,
             "frame_rate",
@@ -209,10 +229,12 @@ def variant_score(variant):
         )
 
         or 0
+
     )
 
 
     return (
+
         int(bandwidth),
 
         int(resolution[0])
@@ -220,6 +242,7 @@ def variant_score(variant):
         int(resolution[1]),
 
         float(fps)
+
     )
 
 
@@ -245,10 +268,8 @@ def resolve_media_playlist(source_url):
                 )
 
 
-            return (
-                playlist,
-                final_url
-            )
+            return final_url
+
 
 
         if not playlist.playlists:
@@ -258,126 +279,65 @@ def resolve_media_playlist(source_url):
             )
 
 
+
         selected = max(
+
             playlist.playlists,
+
             key=variant_score
+
         )
 
 
         current_url = urljoin(
+
             final_url,
+
             selected.uri
+
         )
 
 
         print(
+
             "Calidad seleccionada:",
+
             selected.stream_info.resolution,
+
             selected.stream_info.frame_rate,
+
             "FPS"
+
         )
+
 
 
     raise RuntimeError(
         "Demasiados niveles HLS."
     )
 
-def absolutize_segment_references(
-    segment,
-    playlist_url
-):
-
-    segment.uri = urljoin(
-        playlist_url,
-        segment.uri
-    )
-
-
-    if (
-        segment.key
-        and segment.key.uri
-    ):
-
-        segment.key.uri = urljoin(
-            playlist_url,
-            segment.key.uri
-        )
-
-
-    if (
-        segment.init_section
-        and segment.init_section.uri
-    ):
-
-        segment.init_section.uri = urljoin(
-            playlist_url,
-            segment.init_section.uri
-        )
-
-
-
-def write_full_playlist(
-    media_playlist,
-    media_playlist_url,
-    destination
-):
-
-    playlist = copy.deepcopy(
-        media_playlist
-    )
-
-
-    segments = list(
-        playlist.segments
-    )
-
-
-    for segment in segments:
-
-        absolutize_segment_references(
-            segment,
-            media_playlist_url
-        )
-
-
-    playlist.segments = SegmentList(
-        segments
-    )
-
-
-    playlist.is_endlist = True
-
-    playlist.playlist_type = "vod"
-
-
-    destination.write_text(
-        playlist.dumps(),
-        encoding="utf-8"
-    )
-
-
-
 def download_full_vod(
-    playlist_path,
+    playlist_url,
     output_path
 ):
 
     subprocess.run(
         [
+
             "ffmpeg",
 
-            "-protocol_whitelist",
-            "file,http,https,tcp,tls,crypto,data",
-
             "-i",
-            str(playlist_path),
+
+            playlist_url,
 
             "-c",
+
             "copy",
 
             "-y",
 
             str(output_path)
+
         ],
 
         check=True
@@ -401,9 +361,11 @@ def build_metadata(video):
 
 
     date = (
+
         created_at
         .split("T")[0]
         .split(" ")[0]
+
     )
 
 
@@ -413,9 +375,11 @@ def build_metadata(video):
             date.split("-")
         )
 
+
         formatted_date = (
             f"{day}/{month}/{year}"
         )
+
 
     except Exception:
 
@@ -424,55 +388,79 @@ def build_metadata(video):
 
 
     channel_name = (
+
         CHANNEL[0].upper()
+
         +
+
         CHANNEL[1:]
+
     )
 
 
     title = (
+
         f"{channel_name} | "
+
         f"{formatted_date}"
+
     )
 
 
 
     session_title = str(
+
         video.get(
             "session_title"
         )
+
         or
+
         "Sin título"
+
     )
 
 
     start_time = str(
+
         video.get(
             "start_time"
         )
+
         or
+
         ""
+
     )
 
 
     source = str(
+
         video.get(
             "source"
         )
+
         or
+
         ""
+
     )
 
 
     description = "\n\n".join(
+
         [
+
             session_title,
 
             start_time,
 
             source
+
         ]
+
     )
+
 
 
     tags = [
@@ -488,6 +476,7 @@ def build_metadata(video):
     ]
 
 
+
     return {
 
         "title":
@@ -501,12 +490,17 @@ def build_metadata(video):
 
         "vod_id":
             vod_id
+
     }
+
+
 
 def get_archive_identifier(vod_id):
 
     return (
+
         f"{CHANNEL}-kick-vod-{vod_id}"
+
     )
 
 
@@ -564,35 +558,44 @@ def upload_archive(
     archive_metadata = {
 
         "title":
+
             metadata["title"],
 
 
         "description":
+
             metadata["description"],
 
 
         "creator":
+
             CHANNEL,
 
 
         "mediatype":
+
             "movies",
 
 
         "collection":
+
             IA_COLLECTION,
 
 
         "subject":
+
             metadata["tags"],
 
 
         "keywords":
+
             metadata["tags"],
 
 
         "identifier":
+
             identifier
+
     }
 
 
@@ -600,6 +603,7 @@ def upload_archive(
     print(
         "Preparando subida:"
     )
+
 
     print(
         identifier
@@ -618,10 +622,12 @@ def upload_archive(
         {
 
             "name":
+
                 video_path.name,
 
 
             "path":
+
                 str(video_path)
 
         }
@@ -633,6 +639,7 @@ def upload_archive(
     print(
         "Subiendo archivo:"
     )
+
 
     print(
         video_path
@@ -662,6 +669,7 @@ def upload_archive(
         "Respuesta Archive.org:"
     )
 
+
     print(
         response
     )
@@ -679,213 +687,3 @@ def upload_archive(
 
 
     return identifier
-
-def process_oldest_pending_video(videos):
-
-    for video in videos:
-
-        vod_id = str(
-            video["id"]
-        )
-
-
-        if archive_vod_exists(
-            vod_id
-        ):
-
-            print(
-                f"VOD {vod_id} ya está subido. Se omite."
-            )
-
-            continue
-
-
-
-        print(
-            f"Procesando VOD más antiguo pendiente: {vod_id}"
-        )
-
-
-
-        media_playlist, playlist_url = (
-            resolve_media_playlist(
-                video["source"]
-            )
-        )
-
-
-
-        created_at = str(
-            video.get(
-                "created_at",
-                "unknown"
-            )
-        )
-
-
-        video_date = (
-            created_at
-            .split("T")[0]
-            .split(" ")[0]
-        )
-
-
-
-        vod_directory = (
-
-            WORKSPACE
-
-            /
-
-            f"{video_date}_{vod_id}"
-
-        )
-
-
-        vod_directory.mkdir(
-            parents=True,
-            exist_ok=True
-        )
-
-
-
-        playlist_file = (
-
-            vod_directory
-
-            /
-
-            "full_vod.m3u8"
-
-        )
-
-
-
-        output_file = (
-
-            vod_directory
-
-            /
-
-            f"{CHANNEL}_vod_{vod_id}.ts"
-
-        )
-
-
-
-        print(
-            "Creando playlist completa..."
-        )
-
-
-
-        write_full_playlist(
-
-            media_playlist,
-
-            playlist_url,
-
-            playlist_file
-
-        )
-
-
-
-        print(
-            "Descargando VOD completo..."
-        )
-
-
-
-        download_full_vod(
-
-            playlist_file,
-
-            output_file
-
-        )
-
-
-
-        print(
-            "Archivo descargado:"
-        )
-
-
-        print(
-            output_file
-        )
-
-
-
-        upload_archive(
-
-            video,
-
-            output_file
-
-        )
-
-
-
-        print(
-            f"VOD {vod_id} finalizado correctamente."
-        )
-
-
-
-        return True
-
-
-
-    return False
-
-
-
-
-
-def main():
-
-    WORKSPACE.mkdir(
-
-        parents=True,
-
-        exist_ok=True
-
-    )
-
-
-
-    videos = get_kick_videos()
-
-
-
-    if not videos:
-
-        print(
-            "No hay VODs disponibles."
-        )
-
-        return
-
-
-
-    processed = process_oldest_pending_video(
-        videos
-    )
-
-
-
-    if not processed:
-
-        print(
-            "No hay VODs pendientes."
-        )
-
-
-
-
-
-if __name__ == "__main__":
-
-    main()
