@@ -1,0 +1,40 @@
+name: Upload oldest VOD to Internet Archive
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: vector-archive-upload
+  cancel-in-progress: false
+
+jobs:
+  upload:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Prepare environment
+        run: |
+          sudo mkdir -p /mnt/workspace
+          sudo chown "$USER:$USER" /mnt/workspace
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install m3u8 internetarchive
+      - name: Download and upload VOD
+        env:
+          KICK_CHANNEL: vector
+          WORKSPACE_DIR: /mnt/workspace
+
+          IA_ACCESS_KEY: ${{ secrets.IA_ACCESS_KEY }}
+          IA_SECRET_KEY: ${{ secrets.IA_SECRET_KEY }}
+
+          IA_COLLECTION: opensource_media
+
+        run: |
+          python download_vod.py
