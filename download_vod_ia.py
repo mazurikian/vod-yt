@@ -687,3 +687,190 @@ def upload_archive(
 
 
     return identifier
+
+def process_oldest_pending_video(videos):
+
+    for video in videos:
+
+        vod_id = str(
+            video["id"]
+        )
+
+
+        if archive_vod_exists(
+            vod_id
+        ):
+
+            print(
+                f"VOD {vod_id} ya está subido. Se omite."
+            )
+
+            continue
+
+
+
+        print(
+            f"Procesando VOD más antiguo pendiente: {vod_id}"
+        )
+
+
+
+        # Resuelve la playlist HLS de máxima calidad
+        # pero NO crea una copia local .m3u8
+
+        playlist_url = resolve_media_playlist(
+            video["source"]
+        )
+
+
+
+        created_at = str(
+            video.get(
+                "created_at",
+                "unknown"
+            )
+        )
+
+
+        video_date = (
+
+            created_at
+            .split("T")[0]
+            .split(" ")[0]
+
+        )
+
+
+
+        vod_directory = (
+
+            WORKSPACE
+
+            /
+
+            f"{video_date}_{vod_id}"
+
+        )
+
+
+        vod_directory.mkdir(
+            parents=True,
+            exist_ok=True
+        )
+
+
+
+        output_file = (
+
+            vod_directory
+
+            /
+
+            f"{CHANNEL}_vod_{vod_id}.ts"
+
+        )
+
+
+
+        print(
+            "Descargando VOD completo desde HLS remoto..."
+        )
+
+
+        print(
+            playlist_url
+        )
+
+
+
+        download_full_vod(
+
+            playlist_url,
+
+            output_file
+
+        )
+
+
+
+        print(
+            "Archivo descargado:"
+        )
+
+
+        print(
+            output_file
+        )
+
+
+
+        upload_archive(
+
+            video,
+
+            output_file
+
+        )
+
+
+
+        print(
+            f"VOD {vod_id} finalizado correctamente."
+        )
+
+
+        return True
+
+
+
+    return False
+
+
+
+
+
+def main():
+
+    WORKSPACE.mkdir(
+
+        parents=True,
+
+        exist_ok=True
+
+    )
+
+
+
+    videos = get_kick_videos()
+
+
+
+    if not videos:
+
+        print(
+            "No hay VODs disponibles."
+        )
+
+        return
+
+
+
+    processed = process_oldest_pending_video(
+        videos
+    )
+
+
+
+    if not processed:
+
+        print(
+            "No hay VODs pendientes."
+        )
+
+
+
+
+
+if __name__ == "__main__":
+
+    main()
