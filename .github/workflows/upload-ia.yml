@@ -3,10 +3,6 @@ name: Upload oldest VOD to Internet Archive
 on:
   workflow_dispatch:
 
-concurrency:
-  group: vector-archive-upload
-  cancel-in-progress: false
-
 jobs:
   upload:
     runs-on: ubuntu-latest
