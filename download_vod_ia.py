@@ -1,3 +1,8 @@
+# download_vod.py
+# Kick VOD -> Internet Archive
+# Sin YouTube
+# VOD completo sin dividir
+
 import copy
 import json
 import os
@@ -40,7 +45,7 @@ IA_SECRET_KEY = os.environ.get(
 
 IA_COLLECTION = os.environ.get(
     "IA_COLLECTION",
-    "opensource_media"
+    "community"
 )
 
 
@@ -57,7 +62,7 @@ HTTP_HEADERS = {
         "application/json,"
         "application/vnd.apple.mpegurl,"
         "*/*"
-    ),
+    )
 }
 
 
@@ -86,7 +91,7 @@ def get_kick_videos():
     ):
 
         raise RuntimeError(
-            "Kick no devolvió una lista de VODs."
+            "Kick no devolvió una lista."
         )
 
 
@@ -95,14 +100,17 @@ def get_kick_videos():
             video
             for video in videos
 
-            if (
-                video.get("is_live")
-                is not True
+            if video.get(
+                "is_live"
+            ) is not True
+
+            and video.get(
+                "source"
             )
 
-            and video.get("source")
-
-            and video.get("id") is not None
+            and video.get(
+                "id"
+            )
         ],
 
         key=lambda video: (
@@ -113,8 +121,7 @@ def get_kick_videos():
 
             str(
                 video.get(
-                    "id",
-                    ""
+                    "id"
                 )
             )
         )
@@ -159,12 +166,12 @@ def fetch_playlist(url):
 
 def variant_score(variant):
 
-    stream = variant.stream_info
+    info = variant.stream_info
 
 
     bandwidth = (
         getattr(
-            stream,
+            info,
             "average_bandwidth",
             None
         )
@@ -172,7 +179,7 @@ def variant_score(variant):
         or
 
         getattr(
-            stream,
+            info,
             "bandwidth",
             None
         )
@@ -183,7 +190,7 @@ def variant_score(variant):
 
     resolution = (
         getattr(
-            stream,
+            info,
             "resolution",
             None
         )
@@ -196,7 +203,7 @@ def variant_score(variant):
 
     fps = (
         getattr(
-            stream,
+            info,
             "frame_rate",
             None
         )
@@ -234,7 +241,7 @@ def resolve_media_playlist(source_url):
             if not playlist.segments:
 
                 raise RuntimeError(
-                    "El playlist está vacío."
+                    "Playlist sin segmentos."
                 )
 
 
@@ -264,7 +271,7 @@ def resolve_media_playlist(source_url):
 
 
         print(
-            "Seleccionada calidad:",
+            "Calidad seleccionada:",
             selected.stream_info.resolution,
             selected.stream_info.frame_rate,
             "FPS"
@@ -274,8 +281,6 @@ def resolve_media_playlist(source_url):
     raise RuntimeError(
         "Demasiados niveles HLS."
     )
-
-
 
 def absolutize_segment_references(
     segment,
@@ -370,11 +375,18 @@ def download_full_vod(
             "-c",
             "copy",
 
+            "-bsf:a",
+            "aac_adtstoasc",
+
+            "-y",
+
             str(output_path)
         ],
 
         check=True
     )
+
+
 
 def build_metadata(video):
 
@@ -391,7 +403,7 @@ def build_metadata(video):
     )
 
 
-    video_date = (
+    date = (
         created_at
         .split("T")[0]
         .split(" ")[0]
@@ -401,21 +413,21 @@ def build_metadata(video):
     try:
 
         year, month, day = (
-            video_date.split("-")
+            date.split("-")
         )
 
         formatted_date = (
             f"{day}/{month}/{year}"
         )
 
-    except ValueError:
+    except Exception:
 
-        formatted_date = video_date
+        formatted_date = date
 
 
 
     channel_name = (
-        CHANNEL[:1].upper()
+        CHANNEL[0].upper()
         +
         CHANNEL[1:]
     )
@@ -427,10 +439,10 @@ def build_metadata(video):
     )
 
 
+
     session_title = str(
         video.get(
-            "session_title",
-            ""
+            "session_title"
         )
         or
         "Sin título"
@@ -439,8 +451,7 @@ def build_metadata(video):
 
     start_time = str(
         video.get(
-            "start_time",
-            ""
+            "start_time"
         )
         or
         ""
@@ -449,8 +460,7 @@ def build_metadata(video):
 
     source = str(
         video.get(
-            "source",
-            ""
+            "source"
         )
         or
         ""
@@ -460,31 +470,41 @@ def build_metadata(video):
     description = "\n\n".join(
         [
             session_title,
+
             start_time,
+
             source
         ]
     )
 
 
     tags = [
+
         CHANNEL,
+
         "Kick",
+
         "VOD",
+
         f"kick-vod-id:{vod_id}"
+
     ]
 
 
     return {
-        "title": title,
 
-        "description": description,
+        "title":
+            title,
 
-        "tags": tags,
+        "description":
+            description,
 
-        "vod_id": vod_id
+        "tags":
+            tags,
+
+        "vod_id":
+            vod_id
     }
-
-
 
 def get_archive_identifier(vod_id):
 
@@ -496,10 +516,8 @@ def get_archive_identifier(vod_id):
 
 def archive_vod_exists(vod_id):
 
-    identifier = (
-        get_archive_identifier(
-            str(vod_id)
-        )
+    identifier = get_archive_identifier(
+        vod_id
     )
 
 
@@ -508,7 +526,17 @@ def archive_vod_exists(vod_id):
     )
 
 
-    return item.exists
+    exists = item.exists
+
+
+    if exists:
+
+        print(
+            f"Encontrado en Archive.org: {identifier}"
+        )
+
+
+    return exists
 
 
 
@@ -517,16 +545,23 @@ def upload_archive(
     video_path
 ):
 
+    if not IA_ACCESS_KEY or not IA_SECRET_KEY:
+
+        raise RuntimeError(
+            "Faltan IA_ACCESS_KEY o IA_SECRET_KEY."
+        )
+
+
+
     metadata = build_metadata(
         video
     )
 
 
-    identifier = (
-        get_archive_identifier(
-            metadata["vod_id"]
-        )
+    identifier = get_archive_identifier(
+        metadata["vod_id"]
     )
+
 
 
     archive_metadata = {
@@ -558,17 +593,21 @@ def upload_archive(
         "keywords":
             metadata["tags"],
 
+
+        "identifier":
+            identifier
     }
 
 
 
     print(
-        "Subiendo a Internet Archive:"
+        "Preparando subida:"
     )
 
     print(
         identifier
     )
+
 
 
     item = internetarchive.get_item(
@@ -576,10 +615,37 @@ def upload_archive(
     )
 
 
-    response = item.upload(
-        video_path.name,
 
-        str(video_path),
+    files = [
+
+        {
+
+            "name":
+                video_path.name,
+
+
+            "path":
+                str(video_path)
+
+        }
+
+    ]
+
+
+
+    print(
+        "Subiendo archivo:"
+    )
+
+    print(
+        video_path
+    )
+
+
+
+    response = item.upload(
+
+        files,
 
         metadata=archive_metadata,
 
@@ -587,19 +653,26 @@ def upload_archive(
 
         secret_key=IA_SECRET_KEY,
 
-        retries=10
+        retries=10,
+
+        verbose=True
+
     )
 
 
-    if not response:
 
-        raise RuntimeError(
-            "Archive.org rechazó la subida."
-        )
+    print(
+        "Respuesta Archive.org:"
+    )
+
+    print(
+        response
+    )
+
 
 
     print(
-        "VOD subido correctamente:"
+        "Subida completada:"
     )
 
 
@@ -624,7 +697,7 @@ def process_oldest_pending_video(videos):
         ):
 
             print(
-                f"VOD {vod_id} ya existe en Archive.org, saltando."
+                f"VOD {vod_id} ya está subido. Se omite."
             )
 
             continue
@@ -662,9 +735,13 @@ def process_oldest_pending_video(videos):
 
 
         vod_directory = (
+
             WORKSPACE
+
             /
+
             f"{video_date}_{vod_id}"
+
         )
 
 
@@ -676,33 +753,43 @@ def process_oldest_pending_video(videos):
 
 
         playlist_file = (
+
             vod_directory
+
             /
+
             "full_vod.m3u8"
+
         )
 
 
 
         output_file = (
+
             vod_directory
+
             /
+
             f"{CHANNEL}_vod_{vod_id}.ts"
+
         )
 
 
 
         print(
-            "Generando playlist completa..."
+            "Creando playlist completa..."
         )
 
 
 
         write_full_playlist(
+
             media_playlist,
 
             playlist_url,
 
             playlist_file
+
         )
 
 
@@ -714,15 +801,17 @@ def process_oldest_pending_video(videos):
 
 
         download_full_vod(
+
             playlist_file,
 
             output_file
+
         )
 
 
 
         print(
-            "Descarga terminada:"
+            "Archivo descargado:"
         )
 
 
@@ -733,16 +822,19 @@ def process_oldest_pending_video(videos):
 
 
         upload_archive(
+
             video,
 
             output_file
+
         )
 
 
 
         print(
-            "Proceso completado."
+            f"VOD {vod_id} finalizado correctamente."
         )
+
 
 
         return True
@@ -753,11 +845,16 @@ def process_oldest_pending_video(videos):
 
 
 
+
+
 def main():
 
     WORKSPACE.mkdir(
+
         parents=True,
+
         exist_ok=True
+
     )
 
 
@@ -776,10 +873,8 @@ def main():
 
 
 
-    processed = (
-        process_oldest_pending_video(
-            videos
-        )
+    processed = process_oldest_pending_video(
+        videos
     )
 
 
@@ -789,6 +884,8 @@ def main():
         print(
             "No hay VODs pendientes."
         )
+
+
 
 
 
