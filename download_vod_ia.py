@@ -370,9 +370,6 @@ def download_full_vod(
             "-c",
             "copy",
 
-            "-bsf:a",
-            "aac_adtstoasc",
-
             str(output_path)
         ],
 
