@@ -32,6 +32,11 @@ WORKSPACE = Path(
     )
 )
 
+BASE_DIR = Path(
+    __file__
+).resolve().parent
+
+VIDEOS_JSON = BASE_DIR / "videos.json"
 
 IA_ACCESS_KEY = os.environ.get(
     "IA_ACCESS_KEY"
@@ -72,19 +77,53 @@ HTTP_HEADERS = {
 
 def get_kick_videos():
 
-    request = urllib.request.Request(
-        KICK_API_URL,
-        headers=HTTP_HEADERS
-    )
+    if VIDEOS_JSON.exists():
+
+        print(
+            f"Usando videos.json local: {VIDEOS_JSON}"
+        )
 
 
-    with urllib.request.urlopen(
-        request,
-        timeout=60
-    ) as response:
+        with open(
+            VIDEOS_JSON,
+            "r",
+            encoding="utf-8"
+        ) as file:
 
-        videos = json.load(
-            response
+            videos = json.load(
+                file
+            )
+
+
+    else:
+
+        print(
+            "Descargando lista de VODs desde Kick API..."
+        )
+
+
+        request = urllib.request.Request(
+            KICK_API_URL,
+            headers=HTTP_HEADERS
+        )
+
+
+        with urllib.request.urlopen(
+            request,
+            timeout=60
+        ) as response:
+
+            videos = json.load(
+                response
+            )
+
+
+        print(
+            "No existe videos.json local."
+        )
+
+        print(
+            "Se recomienda guardar la respuesta manualmente."
         )
 
 
@@ -94,7 +133,7 @@ def get_kick_videos():
     ):
 
         raise RuntimeError(
-            "Kick no devolvió una lista."
+            "videos.json no contiene una lista válida."
         )
 
 
@@ -138,7 +177,6 @@ def get_kick_videos():
             )
 
     )
-
 
 
 def fetch_playlist(url):
