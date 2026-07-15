@@ -616,24 +616,18 @@ def upload_archive(
     )
 
 
+    if not video_path.exists():
+
+        raise RuntimeError(
+            f"Archivo no encontrado: {video_path}"
+        )
+
 
     files = [
 
-        {
-
-            "name":
-
-                video_path.name,
-
-
-            "path":
-
-                str(video_path)
-
-        }
+        str(video_path)
 
     ]
-
 
 
     print(
@@ -662,8 +656,6 @@ def upload_archive(
         verbose=True
 
     )
-
-
 
     print(
         "Respuesta Archive.org:"
