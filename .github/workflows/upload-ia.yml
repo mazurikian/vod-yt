@@ -33,4 +33,5 @@ jobs:
           IA_COLLECTION: opensource_media
 
         run: |
+          df -h
           python download_vod_ia.py
